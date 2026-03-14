@@ -2,19 +2,33 @@ import 'dart:io';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import '../models/bingo_card.dart';
 
+class OcrResult {
+  final List<BingoCard> cards;
+  final int totalNumbersDetected;
+  final int totalTextElements;
+
+  OcrResult({
+    required this.cards,
+    required this.totalNumbersDetected,
+    required this.totalTextElements,
+  });
+}
+
 class OcrService {
   final _textRecognizer = TextRecognizer();
 
   /// Process an image file and extract bingo card(s).
   /// Handles sheets with 1-9 cards in any grid layout.
-  Future<List<BingoCard>> processImage(File imageFile) async {
+  Future<OcrResult> processImage(File imageFile) async {
     final inputImage = InputImage.fromFile(imageFile);
     final recognized = await _textRecognizer.processImage(inputImage);
 
+    int totalTextElements = 0;
     final elements = <_NumberElement>[];
     for (final block in recognized.blocks) {
       for (final line in block.lines) {
         for (final element in line.elements) {
+          totalTextElements++;
           final number = int.tryParse(element.text.trim());
           if (number != null && number >= 1 && number <= 75) {
             final box = element.boundingBox;
@@ -28,8 +42,18 @@ class OcrService {
       }
     }
 
-    if (elements.length < 10) return [];
-    return _extractCards(elements);
+    if (elements.length < 5) {
+      return OcrResult(
+        cards: [],
+        totalNumbersDetected: elements.length,
+        totalTextElements: totalTextElements,
+      );
+    }
+    return OcrResult(
+      cards: _extractCards(elements),
+      totalNumbersDetected: elements.length,
+      totalTextElements: totalTextElements,
+    );
   }
 
   List<BingoCard> _extractCards(List<_NumberElement> elements) {
@@ -58,7 +82,7 @@ class OcrService {
     final sortedKeys = regions.keys.toList()..sort();
     for (final key in sortedKeys) {
       final regionElements = regions[key]!;
-      if (regionElements.length >= 15) {
+      if (regionElements.length >= 8) {
         final card = _buildCardFromRegion(regionElements);
         if (card != null) cards.add(card);
       }

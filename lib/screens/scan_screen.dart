@@ -19,6 +19,7 @@ class _ScanScreenState extends State<ScanScreen> {
   bool _processing = false;
   List<BingoCard>? _detectedCards;
   String? _error;
+  String? _detectionInfo;
 
   @override
   void dispose() {
@@ -30,9 +31,6 @@ class _ScanScreenState extends State<ScanScreen> {
     try {
       final image = await _picker.pickImage(
         source: source,
-        maxWidth: 1920,
-        maxHeight: 1920,
-        imageQuality: 90,
       );
       if (image == null) return;
 
@@ -40,16 +38,24 @@ class _ScanScreenState extends State<ScanScreen> {
         _processing = true;
         _error = null;
         _detectedCards = null;
+        _detectionInfo = null;
       });
 
-      final cards = await _ocrService.processImage(File(image.path));
+      final result = await _ocrService.processImage(File(image.path));
 
       setState(() {
         _processing = false;
-        if (cards.isEmpty) {
-          _error = 'No bingo numbers detected. Try taking a clearer photo.';
+        _detectionInfo =
+            'Detected ${result.totalNumbersDetected} bingo numbers '
+            'from ${result.totalTextElements} text elements';
+        if (result.cards.isEmpty) {
+          _error =
+              'No bingo cards could be built.\n$_detectionInfo.\n\n'
+              'Tips: Use the camera for best results. '
+              'Hold the phone directly over one card at a time '
+              'with good lighting.';
         } else {
-          _detectedCards = cards;
+          _detectedCards = result.cards;
         }
       });
     } catch (e) {
@@ -159,10 +165,25 @@ class _ScanScreenState extends State<ScanScreen> {
       children: [
         Padding(
           padding: const EdgeInsets.all(16),
-          child: Text(
-            'Found ${_detectedCards!.length} card(s). '
-            'Tap any cell to edit the number.',
-            style: Theme.of(context).textTheme.bodyMedium,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Found ${_detectedCards!.length} card(s). '
+                'Tap any cell to edit the number.',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              if (_detectionInfo != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    _detectionInfo!,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                  ),
+                ),
+            ],
           ),
         ),
         Expanded(
