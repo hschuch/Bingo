@@ -86,7 +86,7 @@ class _ScanScreenState extends State<ScanScreen> {
                 color: Theme.of(context)
                     .colorScheme
                     .primary
-                    .withValues(alpha: 0.4)),
+                    .withOpacity(0.4)),
             const SizedBox(height: 24),
             Text(
               'Scan Your Bingo Card',
@@ -303,7 +303,7 @@ class _EditableCardWidget extends StatelessWidget {
                           borderRadius: BorderRadius.circular(4),
                           border: Border.all(
                             color: theme.colorScheme.outline
-                                .withValues(alpha: 0.3),
+                                .withOpacity(0.3),
                           ),
                         ),
                         child: Center(

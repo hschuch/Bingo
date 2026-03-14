@@ -65,7 +65,7 @@ class HomeScreen extends StatelessWidget {
           children: [
             Icon(Icons.grid_view_rounded,
                 size: 80,
-                color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.4)),
+                color: Theme.of(context).colorScheme.primary.withOpacity(0.4)),
             const SizedBox(height: 24),
             Text(
               'No Bingo Cards',

@@ -100,7 +100,7 @@ class BingoCardWidget extends StatelessWidget {
                 color: bgColor,
                 borderRadius: BorderRadius.circular(4),
                 border: Border.all(
-                  color: theme.colorScheme.outline.withValues(alpha: 0.3),
+                  color: theme.colorScheme.outline.withOpacity(0.3),
                 ),
               ),
               child: Center(
@@ -129,7 +129,7 @@ class BingoCardWidget extends StatelessWidget {
                               Icons.circle,
                               size: 36,
                               color: theme.colorScheme.primary
-                                  .withValues(alpha: 0.2),
+                                  .withOpacity(0.2),
                             ),
                         ],
                       ),
