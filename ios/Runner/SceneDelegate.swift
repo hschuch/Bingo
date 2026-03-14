@@ -1,6 +1,6 @@
-import Flutter
 import UIKit
+import Flutter
 
-class SceneDelegate: FlutterSceneDelegate {
-
+class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+  var window: UIWindow?
 }
