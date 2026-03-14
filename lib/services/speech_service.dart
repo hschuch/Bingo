@@ -81,9 +81,15 @@ class SpeechService {
         final text = result.recognizedWords;
         if (text.isNotEmpty) {
           _textController.add(text);
-          final calls = parseBingoCalls(text);
-          for (final call in calls) {
-            _numberController.add(call.number);
+          // Only parse and call numbers on FINAL results.
+          // Partial results change as speech is recognized
+          // (e.g., "5" → "50" → "57"), so acting on them
+          // causes false calls.
+          if (result.finalResult) {
+            final calls = parseBingoCalls(text);
+            for (final call in calls) {
+              _numberController.add(call.number);
+            }
           }
         }
       },
