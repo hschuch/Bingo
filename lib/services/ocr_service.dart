@@ -5,21 +5,20 @@ import '../models/bingo_card.dart';
 class OcrService {
   final _textRecognizer = TextRecognizer();
 
-  /// Process an image file and attempt to extract bingo card(s).
-  /// Returns a list of BingoCards found in the image.
+  /// Process an image file and extract bingo card(s).
+  /// Handles sheets with 1-9 cards in any grid layout.
   Future<List<BingoCard>> processImage(File imageFile) async {
     final inputImage = InputImage.fromFile(imageFile);
     final recognized = await _textRecognizer.processImage(inputImage);
 
-    // Extract all numeric elements with their positions
-    final numberElements = <_NumberElement>[];
+    final elements = <_NumberElement>[];
     for (final block in recognized.blocks) {
       for (final line in block.lines) {
         for (final element in line.elements) {
           final number = int.tryParse(element.text.trim());
           if (number != null && number >= 1 && number <= 75) {
             final box = element.boundingBox;
-            numberElements.add(_NumberElement(
+            elements.add(_NumberElement(
               number: number,
               centerX: box.center.dx,
               centerY: box.center.dy,
@@ -29,116 +28,173 @@ class OcrService {
       }
     }
 
-    if (numberElements.isEmpty) return [];
-
-    // Try to cluster numbers into 5x5 grids
-    return _clusterIntoCards(numberElements);
+    if (elements.length < 10) return [];
+    return _extractCards(elements);
   }
 
-  /// Cluster detected numbers into bingo card grids.
-  List<BingoCard> _clusterIntoCards(List<_NumberElement> elements) {
-    // Sort by Y first, then X
-    elements.sort((a, b) {
-      final yDiff = a.centerY - b.centerY;
-      if (yDiff.abs() > 20) return yDiff.toInt();
-      return (a.centerX - b.centerX).toInt();
-    });
+  List<BingoCard> _extractCards(List<_NumberElement> elements) {
+    // Step 1: Cluster X and Y positions to find column/row groups.
+    // Numbers in the same grid column have nearly identical X values;
+    // numbers in the same grid row have nearly identical Y values.
+    final xClusters = _clusterValues(elements.map((e) => e.centerX).toList());
+    final yClusters = _clusterValues(elements.map((e) => e.centerY).toList());
 
-    // Group into rows by Y proximity
-    final rows = <List<_NumberElement>>[];
-    List<_NumberElement> currentRow = [elements.first];
+    // Step 2: Find card boundaries — large gaps between clusters
+    // that separate one card from the next.
+    final xBoundaries = _findCardBoundaries(xClusters);
+    final yBoundaries = _findCardBoundaries(yClusters);
 
-    for (int i = 1; i < elements.length; i++) {
-      final yGap = (elements[i].centerY - currentRow.last.centerY).abs();
-      if (yGap < 25) {
-        currentRow.add(elements[i]);
-      } else {
-        currentRow.sort((a, b) => a.centerX.compareTo(b.centerX));
-        rows.add(currentRow);
-        currentRow = [elements[i]];
-      }
-    }
-    currentRow.sort((a, b) => a.centerX.compareTo(b.centerX));
-    rows.add(currentRow);
-
-    // If we have exactly 5 rows with ~5 elements each, it's one card
-    if (rows.length >= 5) {
-      return _extractCardsFromRows(rows);
+    // Step 3: Assign each element to a card region
+    final regions = <String, List<_NumberElement>>{};
+    for (final elem in elements) {
+      final cx = _regionIndex(elem.centerX, xBoundaries);
+      final cy = _regionIndex(elem.centerY, yBoundaries);
+      final key = '${cy}_$cx';
+      regions.putIfAbsent(key, () => []).add(elem);
     }
 
-    // If fewer rows, just try to make the best card we can
-    if (elements.length >= 20) {
-      return _extractCardsFromRows(rows);
-    }
-
-    // Too few numbers — build a partial card
-    return [_buildPartialCard(elements)];
-  }
-
-  List<BingoCard> _extractCardsFromRows(List<List<_NumberElement>> rows) {
+    // Step 4: Build a BingoCard from each region
     final cards = <BingoCard>[];
-
-    // Try to split into groups of 5 rows (multiple cards stacked vertically)
-    for (int startRow = 0; startRow + 4 < rows.length; startRow += 5) {
-      final cardRows = rows.sublist(startRow, startRow + 5);
-      final grid = List.generate(5, (_) => List<int?>.filled(5, null));
-
-      for (int r = 0; r < 5; r++) {
-        final row = cardRows[r];
-        // Take up to 5 numbers from each row
-        for (int c = 0; c < row.length && c < 5; c++) {
-          grid[r][c] = row[c].number;
-        }
+    final sortedKeys = regions.keys.toList()..sort();
+    for (final key in sortedKeys) {
+      final regionElements = regions[key]!;
+      if (regionElements.length >= 15) {
+        final card = _buildCardFromRegion(regionElements);
+        if (card != null) cards.add(card);
       }
-
-      // Set free space
-      grid[2][2] = null;
-      cards.add(BingoCard(numbers: grid));
     }
 
-    // If rows don't divide evenly by 5, try to make one card from remaining
+    // Fallback: if boundary detection failed, try all elements as one card
     if (cards.isEmpty) {
-      final grid = List.generate(5, (_) => List<int?>.filled(5, null));
-      for (int r = 0; r < rows.length && r < 5; r++) {
-        for (int c = 0; c < rows[r].length && c < 5; c++) {
-          grid[r][c] = rows[r][c].number;
-        }
-      }
-      grid[2][2] = null;
-      cards.add(BingoCard(numbers: grid));
+      final card = _buildCardFromRegion(elements);
+      if (card != null) return [card];
     }
 
     return cards;
   }
 
-  BingoCard _buildPartialCard(List<_NumberElement> elements) {
-    final grid = List.generate(5, (_) => List<int?>.filled(5, null));
+  /// Group nearby coordinate values into clusters.
+  /// Returns sorted list of cluster center values.
+  List<double> _clusterValues(List<double> values) {
+    if (values.isEmpty) return [];
+    values.sort();
 
-    // Try to place numbers in their correct columns based on range
-    final columns = <int, List<int>>{0: [], 1: [], 2: [], 3: [], 4: []};
+    final range = values.last - values.first;
+    if (range < 1) return [values.first];
+
+    // Threshold: values within 2.5% of total range are in the same cluster.
+    // This groups numbers in the same grid column/row together.
+    final threshold = range * 0.025;
+
+    final centers = <double>[];
+    var sum = values.first;
+    var count = 1;
+
+    for (int i = 1; i < values.length; i++) {
+      if (values[i] - values[i - 1] <= threshold) {
+        sum += values[i];
+        count++;
+      } else {
+        centers.add(sum / count);
+        sum = values[i];
+        count = 1;
+      }
+    }
+    centers.add(sum / count);
+    return centers;
+  }
+
+  /// Find card boundaries from cluster center positions.
+  /// A card boundary is a gap between clusters that is significantly
+  /// larger than the typical within-card gap.
+  List<double> _findCardBoundaries(List<double> clusters) {
+    if (clusters.length <= 5) return []; // 5 or fewer = one card
+
+    // Calculate gaps between consecutive cluster centers
+    final gaps = <_Gap>[];
+    for (int i = 1; i < clusters.length; i++) {
+      gaps.add(_Gap(
+        midpoint: (clusters[i] + clusters[i - 1]) / 2,
+        size: clusters[i] - clusters[i - 1],
+      ));
+    }
+
+    // Sort gap sizes to find the median
+    final sortedSizes = gaps.map((g) => g.size).toList()..sort();
+    final medianGap = sortedSizes[sortedSizes.length ~/ 2];
+
+    // Card boundaries are gaps >= 1.7x the median gap
+    final boundaries = <double>[];
+    for (final gap in gaps) {
+      if (gap.size > medianGap * 1.7) {
+        // Avoid adding boundaries too close to each other
+        if (boundaries.isEmpty ||
+            (gap.midpoint - boundaries.last).abs() > medianGap * 2) {
+          boundaries.add(gap.midpoint);
+        }
+      }
+    }
+
+    boundaries.sort();
+    return boundaries;
+  }
+
+  int _regionIndex(double value, List<double> boundaries) {
+    int idx = 0;
+    for (final b in boundaries) {
+      if (value > b) idx++;
+    }
+    return idx;
+  }
+
+  /// Build a BingoCard from elements belonging to one card region.
+  /// Uses the number value to determine the correct column (B/I/N/G/O),
+  /// then sorts by Y position to determine row order within each column.
+  BingoCard? _buildCardFromRegion(List<_NumberElement> elements) {
+    // Group by bingo column range
+    final columns = <int, List<_NumberElement>>{
+      for (int i = 0; i < 5; i++) i: [],
+    };
+
     for (final elem in elements) {
       final col = _columnForNumber(elem.number);
-      if (col != null && columns[col]!.length < 5) {
-        columns[col]!.add(elem.number);
+      if (col != null) {
+        columns[col]!.add(elem);
       }
     }
 
-    for (int c = 0; c < 5; c++) {
-      for (int r = 0; r < columns[c]!.length && r < 5; r++) {
-        grid[r][c] = columns[c]![r];
+    // Build grid: sort each column by Y, take top 5
+    final grid = List.generate(5, (_) => List<int?>.filled(5, null));
+
+    for (int col = 0; col < 5; col++) {
+      final colElements = columns[col]!;
+      colElements.sort((a, b) => a.centerY.compareTo(b.centerY));
+      for (int row = 0; row < colElements.length && row < 5; row++) {
+        grid[row][col] = colElements[row].number;
       }
     }
 
-    grid[2][2] = null; // Free space
+    // Free space
+    grid[2][2] = null;
+
+    // Verify we got enough numbers to be a real card
+    int filled = 0;
+    for (final row in grid) {
+      for (final cell in row) {
+        if (cell != null) filled++;
+      }
+    }
+    if (filled < 10) return null;
+
     return BingoCard(numbers: grid);
   }
 
   int? _columnForNumber(int number) {
-    if (number >= 1 && number <= 15) return 0;
-    if (number >= 16 && number <= 30) return 1;
-    if (number >= 31 && number <= 45) return 2;
-    if (number >= 46 && number <= 60) return 3;
-    if (number >= 61 && number <= 75) return 4;
+    if (number >= 1 && number <= 15) return 0; // B
+    if (number >= 16 && number <= 30) return 1; // I
+    if (number >= 31 && number <= 45) return 2; // N
+    if (number >= 46 && number <= 60) return 3; // G
+    if (number >= 61 && number <= 75) return 4; // O
     return null;
   }
 
@@ -157,4 +213,11 @@ class _NumberElement {
     required this.centerX,
     required this.centerY,
   });
+}
+
+class _Gap {
+  final double midpoint;
+  final double size;
+
+  _Gap({required this.midpoint, required this.size});
 }
