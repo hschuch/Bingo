@@ -22,6 +22,15 @@ class SpeechService {
   final _statusController = StreamController<String>.broadcast();
   final _textController = StreamController<String>.broadcast();
 
+  // Debounce: track the pending call and a timer.
+  // When a partial result detects a bingo call, we start a short timer.
+  // If the detected number changes before the timer fires, we reset it.
+  // This prevents "O 70" from committing when the recognizer is still
+  // working toward "O 74".
+  BingoCall? _pendingCall;
+  Timer? _callDebounce;
+  final Set<int> _emittedThisSession = {};
+
   Stream<int> get onNumberCalled => _numberController.stream;
   Stream<String> get onStatusChange => _statusController.stream;
   Stream<String> get onTextHeard => _textController.stream;
@@ -34,7 +43,6 @@ class SpeechService {
       onStatus: _handleStatus,
       onError: (error) {
         _statusController.add('Error: ${error.errorMsg}');
-        // Auto-restart on error if we should be listening
         if (_shouldBeListening) {
           _scheduleRestart();
         }
@@ -45,8 +53,10 @@ class SpeechService {
 
   void _handleStatus(String status) {
     _statusController.add(status);
-    // Auto-restart when recognition stops but we want it running
     if (status == 'done' && _shouldBeListening) {
+      // Commit any pending call before restarting
+      _commitPending();
+      _emittedThisSession.clear();
       _scheduleRestart();
     }
   }
@@ -60,6 +70,15 @@ class SpeechService {
     });
   }
 
+  void _commitPending() {
+    _callDebounce?.cancel();
+    if (_pendingCall != null) {
+      _numberController.add(_pendingCall!.number);
+      _emittedThisSession.add(_pendingCall!.number);
+      _pendingCall = null;
+    }
+  }
+
   Future<void> startListening() async {
     if (!_isInitialized) {
       final ok = await initialize();
@@ -70,6 +89,8 @@ class SpeechService {
     }
 
     _shouldBeListening = true;
+    _emittedThisSession.clear();
+    _pendingCall = null;
     await _startRecognition();
   }
 
@@ -79,17 +100,40 @@ class SpeechService {
     await _speech.listen(
       onResult: (result) {
         final text = result.recognizedWords;
-        if (text.isNotEmpty) {
-          _textController.add(text);
-          // Only parse and call numbers on FINAL results.
-          // Partial results change as speech is recognized
-          // (e.g., "5" → "50" → "57"), so acting on them
-          // causes false calls.
-          if (result.finalResult) {
-            final calls = parseBingoCalls(text);
-            for (final call in calls) {
-              _numberController.add(call.number);
-            }
+        if (text.isEmpty) return;
+
+        _textController.add(text);
+
+        // Parse all bingo calls, take only the LAST one
+        // (the most recently spoken call in accumulated text)
+        final calls = parseBingoCalls(text);
+        final lastCall = calls.isNotEmpty ? calls.last : null;
+
+        if (result.finalResult) {
+          // Final result: commit immediately
+          _callDebounce?.cancel();
+          _pendingCall = null;
+          if (lastCall != null &&
+              !_emittedThisSession.contains(lastCall.number)) {
+            _numberController.add(lastCall.number);
+            _emittedThisSession.add(lastCall.number);
+          }
+        } else if (lastCall != null &&
+            !_emittedThisSession.contains(lastCall.number)) {
+          // Partial result: debounce to let the number stabilize.
+          // If the number changes, restart the timer.
+          if (_pendingCall?.number != lastCall.number) {
+            _pendingCall = lastCall;
+            _callDebounce?.cancel();
+            _callDebounce =
+                Timer(const Duration(milliseconds: 800), () {
+              if (_pendingCall != null &&
+                  !_emittedThisSession.contains(_pendingCall!.number)) {
+                _numberController.add(_pendingCall!.number);
+                _emittedThisSession.add(_pendingCall!.number);
+                _pendingCall = null;
+              }
+            });
           }
         }
       },
@@ -105,20 +149,19 @@ class SpeechService {
   Future<void> stopListening() async {
     _shouldBeListening = false;
     _restartTimer?.cancel();
+    _commitPending();
     if (_speech.isListening) {
       await _speech.stop();
     }
   }
 
   /// Parse bingo calls from recognized speech text.
-  /// Only matches explicit letter + number patterns:
-  ///   "B 12", "B12", "B-12", "under the B 12", "bee 12"
+  /// Only matches explicit letter + number patterns.
   static List<BingoCall> parseBingoCalls(String text) {
     final calls = <BingoCall>[];
     final normalized = text.toUpperCase();
 
     // Map common speech-to-text mishearings of bingo letters
-    // "bee" → B, "eye" → I, "in" → N, "gee/she" → G, "oh" → O
     var cleaned = normalized;
     cleaned = cleaned.replaceAll(RegExp(r'\bBEE\b'), 'B');
     cleaned = cleaned.replaceAll(RegExp(r'\bEYE\b'), 'I');
@@ -147,8 +190,6 @@ class SpeechService {
       }
     }
 
-    // No fallback patterns — require an explicit letter.
-    // This prevents ambient speech from triggering false calls.
     return calls;
   }
 
@@ -171,6 +212,7 @@ class SpeechService {
 
   void dispose() {
     _restartTimer?.cancel();
+    _callDebounce?.cancel();
     _shouldBeListening = false;
     _speech.stop();
     _numberController.close();
