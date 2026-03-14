@@ -167,6 +167,10 @@ class SpeechService {
     cleaned = cleaned.replaceAll(RegExp(r'\bEYE\b'), 'I');
     cleaned = cleaned.replaceAll(RegExp(r'\bGEE\b'), 'G');
     cleaned = cleaned.replaceAll(RegExp(r'\bOH\b'), 'O');
+    // "N" is often heard as "and", "in", "en"
+    cleaned = cleaned.replaceAll(RegExp(r'\bAND\s+(\d)'), r'N $1');
+    cleaned = cleaned.replaceAll(RegExp(r'\bEN\s+(\d)'), r'N $1');
+    cleaned = cleaned.replaceAll(RegExp(r'\bIN\s+(\d)'), r'N $1');
 
     // Pattern 1: Letter followed by number — "B 12", "B12", "B-12"
     final letterNumber = RegExp(r'\b([BINGO])[\s\-]*(\d{1,2})\b');
