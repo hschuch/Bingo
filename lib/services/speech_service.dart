@@ -111,13 +111,23 @@ class SpeechService {
   }
 
   /// Parse bingo calls from recognized speech text.
+  /// Only matches explicit letter + number patterns:
+  ///   "B 12", "B12", "B-12", "under the B 12", "bee 12"
   static List<BingoCall> parseBingoCalls(String text) {
     final calls = <BingoCall>[];
     final normalized = text.toUpperCase();
 
+    // Map common speech-to-text mishearings of bingo letters
+    // "bee" → B, "eye" → I, "in" → N, "gee/she" → G, "oh" → O
+    var cleaned = normalized;
+    cleaned = cleaned.replaceAll(RegExp(r'\bBEE\b'), 'B');
+    cleaned = cleaned.replaceAll(RegExp(r'\bEYE\b'), 'I');
+    cleaned = cleaned.replaceAll(RegExp(r'\bGEE\b'), 'G');
+    cleaned = cleaned.replaceAll(RegExp(r'\bOH\b'), 'O');
+
     // Pattern 1: Letter followed by number — "B 12", "B12", "B-12"
     final letterNumber = RegExp(r'\b([BINGO])[\s\-]*(\d{1,2})\b');
-    for (final match in letterNumber.allMatches(normalized)) {
+    for (final match in letterNumber.allMatches(cleaned)) {
       final letter = match.group(1)!;
       final number = int.tryParse(match.group(2)!);
       if (number != null && _isValidBingoNumber(letter, number)) {
@@ -129,7 +139,7 @@ class SpeechService {
 
     // Pattern 2: "Under the [letter], [number]"
     final underThe = RegExp(r'UNDER\s+THE\s+([BINGO])[\s,]*(\d{1,2})');
-    for (final match in underThe.allMatches(normalized)) {
+    for (final match in underThe.allMatches(cleaned)) {
       final letter = match.group(1)!;
       final number = int.tryParse(match.group(2)!);
       if (number != null && _isValidBingoNumber(letter, number)) {
@@ -137,35 +147,9 @@ class SpeechService {
       }
     }
 
-    if (calls.isNotEmpty) return calls;
-
-    // Pattern 3: Just a number with context — try to infer letter
-    final justNumber = RegExp(r'\b(\d{1,2})\b');
-    for (final match in justNumber.allMatches(normalized)) {
-      final number = int.tryParse(match.group(1)!);
-      if (number != null && number >= 1 && number <= 75) {
-        // Check if any bingo letter appears nearby in the text
-        final letter = _inferLetter(number);
-        if (letter != null) {
-          calls.add(BingoCall(letter, number));
-        }
-      }
-    }
-
-    // Pattern 4: Handle spoken word numbers
-    final wordCalls = _parseWordNumbers(normalized);
-    calls.addAll(wordCalls);
-
+    // No fallback patterns — require an explicit letter.
+    // This prevents ambient speech from triggering false calls.
     return calls;
-  }
-
-  static String? _inferLetter(int number) {
-    if (number >= 1 && number <= 15) return 'B';
-    if (number >= 16 && number <= 30) return 'I';
-    if (number >= 31 && number <= 45) return 'N';
-    if (number >= 46 && number <= 60) return 'G';
-    if (number >= 61 && number <= 75) return 'O';
-    return null;
   }
 
   static bool _isValidBingoNumber(String letter, int number) {
@@ -183,50 +167,6 @@ class SpeechService {
       default:
         return false;
     }
-  }
-
-  static final _wordNumbers = {
-    'ONE': 1, 'TWO': 2, 'THREE': 3, 'FOUR': 4, 'FIVE': 5,
-    'SIX': 6, 'SEVEN': 7, 'EIGHT': 8, 'NINE': 9, 'TEN': 10,
-    'ELEVEN': 11, 'TWELVE': 12, 'THIRTEEN': 13, 'FOURTEEN': 14,
-    'FIFTEEN': 15, 'SIXTEEN': 16, 'SEVENTEEN': 17, 'EIGHTEEN': 18,
-    'NINETEEN': 19, 'TWENTY': 20, 'THIRTY': 30, 'FORTY': 40,
-    'FIFTY': 50, 'SIXTY': 60, 'SEVENTY': 70,
-  };
-
-  static List<BingoCall> _parseWordNumbers(String text) {
-    final calls = <BingoCall>[];
-
-    // Look for letter followed by word number
-    for (final letter in ['B', 'I', 'N', 'G', 'O']) {
-      final pattern = RegExp('$letter\\s+([A-Z\\s]+)');
-      for (final match in pattern.allMatches(text)) {
-        final wordPart = match.group(1)!.trim();
-        final number = _wordsToNumber(wordPart);
-        if (number != null && _isValidBingoNumber(letter, number)) {
-          calls.add(BingoCall(letter, number));
-        }
-      }
-    }
-
-    return calls;
-  }
-
-  static int? _wordsToNumber(String words) {
-    // Try direct match first
-    if (_wordNumbers.containsKey(words)) return _wordNumbers[words];
-
-    // Try compound: "TWENTY ONE", "THIRTY FIVE", etc.
-    final parts = words.split(RegExp(r'\s+'));
-    if (parts.length == 2) {
-      final tens = _wordNumbers[parts[0]];
-      final ones = _wordNumbers[parts[1]];
-      if (tens != null && ones != null && tens >= 20 && ones <= 9) {
-        return tens + ones;
-      }
-    }
-
-    return null;
   }
 
   void dispose() {
