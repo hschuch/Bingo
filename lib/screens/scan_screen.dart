@@ -46,7 +46,8 @@ class _ScanScreenState extends State<ScanScreen> {
       setState(() {
         _processing = false;
         _detectionInfo =
-            'Detected ${result.totalNumbersDetected} bingo numbers '
+            'Detected ${result.totalNumbersDetected} numbers '
+            '(${result.numbersAfterFilter} after filtering noise) '
             'from ${result.totalTextElements} text elements';
         if (result.cards.isEmpty) {
           _error =
@@ -100,8 +101,8 @@ class _ScanScreenState extends State<ScanScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Take a clear photo of one bingo card at a time. '
-              'Make sure all numbers are visible.',
+              'For best results, photograph ONE card at a time. '
+              'Hold your phone directly over the card with good lighting.',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -240,11 +241,39 @@ class _ScanScreenState extends State<ScanScreen> {
     for (final card in _detectedCards!) {
       gameState.addCard(card);
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-          content: Text('Added ${_detectedCards!.length} card(s)')),
+    final count = _detectedCards!.length;
+    final totalCards = gameState.cards.length;
+
+    // Ask if they want to scan more cards
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Added $count card(s)'),
+        content: Text(
+            'You now have $totalCards card(s) total. '
+            'Scan another card or go back to start playing.'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              Navigator.of(context).pop();
+            },
+            child: const Text('Done'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() {
+                _detectedCards = null;
+                _error = null;
+                _detectionInfo = null;
+              });
+            },
+            child: const Text('Scan Another'),
+          ),
+        ],
+      ),
     );
-    Navigator.of(context).pop();
   }
 
   void _addManualCard() {
