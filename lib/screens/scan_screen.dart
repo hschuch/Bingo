@@ -27,11 +27,9 @@ class _ScanScreenState extends State<ScanScreen> {
     super.dispose();
   }
 
-  Future<void> _captureImage(ImageSource source) async {
+  Future<void> _scanSingleCard(ImageSource source) async {
     try {
-      final image = await _picker.pickImage(
-        source: source,
-      );
+      final image = await _picker.pickImage(source: source);
       if (image == null) return;
 
       setState(() {
@@ -41,20 +39,19 @@ class _ScanScreenState extends State<ScanScreen> {
         _detectionInfo = null;
       });
 
-      final result = await _ocrService.processImage(File(image.path));
+      final result =
+          await _ocrService.processSingleCard(File(image.path));
 
       setState(() {
         _processing = false;
         _detectionInfo =
             'Detected ${result.totalNumbersDetected} numbers '
-            '(${result.numbersAfterFilter} after filtering noise) '
-            'from ${result.totalTextElements} text elements';
+            '(${result.numbersAfterFilter} after noise filter)';
         if (result.cards.isEmpty) {
           _error =
-              'No bingo cards could be built.\n$_detectionInfo.\n\n'
-              'Tips: Use the camera for best results. '
-              'Hold the phone directly over one card at a time '
-              'with good lighting.';
+              'Could not read card.\n$_detectionInfo.\n\n'
+              'Make sure the card fills most of the photo '
+              'and all numbers are clearly visible.';
         } else {
           _detectedCards = result.cards;
         }
@@ -124,13 +121,13 @@ class _ScanScreenState extends State<ScanScreen> {
             ],
             const SizedBox(height: 32),
             FilledButton.icon(
-              onPressed: () => _captureImage(ImageSource.camera),
+              onPressed: () => _scanSingleCard(ImageSource.camera),
               icon: const Icon(Icons.camera_alt),
-              label: const Text('Take Photo'),
+              label: const Text('Scan Card with Camera'),
             ),
             const SizedBox(height: 12),
             OutlinedButton.icon(
-              onPressed: () => _captureImage(ImageSource.gallery),
+              onPressed: () => _scanSingleCard(ImageSource.gallery),
               icon: const Icon(Icons.photo_library),
               label: const Text('Pick from Gallery'),
             ),
@@ -141,6 +138,12 @@ class _ScanScreenState extends State<ScanScreen> {
               onPressed: _addManualCard,
               icon: const Icon(Icons.edit),
               label: const Text('Enter Card Manually'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _addRandomCard,
+              icon: const Icon(Icons.casino),
+              label: const Text('Generate Test Card'),
             ),
           ],
         ),
@@ -281,6 +284,15 @@ class _ScanScreenState extends State<ScanScreen> {
     setState(() {
       _detectedCards = [card];
     });
+  }
+
+  void _addRandomCard() {
+    final card = BingoCard.random();
+    final gameState = context.read<GameState>();
+    gameState.addCard(card);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Added a random test card')),
+    );
   }
 }
 

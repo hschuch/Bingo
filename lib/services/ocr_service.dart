@@ -267,6 +267,48 @@ class OcrService {
     return null;
   }
 
+  /// Simpler method that always builds exactly ONE card from the image.
+  /// Best for when the user photographs a single card.
+  Future<OcrResult> processSingleCard(File imageFile) async {
+    final inputImage = InputImage.fromFile(imageFile);
+    final recognized = await _textRecognizer.processImage(inputImage);
+
+    int totalTextElements = 0;
+    final elements = <_NumberElement>[];
+    for (final block in recognized.blocks) {
+      for (final line in block.lines) {
+        for (final element in line.elements) {
+          totalTextElements++;
+          final number = int.tryParse(element.text.trim());
+          if (number != null && number >= 1 && number <= 75) {
+            final box = element.boundingBox;
+            elements.add(_NumberElement(
+              number: number,
+              centerX: box.center.dx,
+              centerY: box.center.dy,
+              height: box.height,
+            ));
+          }
+        }
+      }
+    }
+
+    final totalDetected = elements.length;
+    _filterByTextSize(elements);
+
+    BingoCard? card;
+    if (elements.length >= 5) {
+      card = _buildCardFromElements(elements);
+    }
+
+    return OcrResult(
+      cards: card != null ? [card] : [],
+      totalNumbersDetected: totalDetected,
+      numbersAfterFilter: elements.length,
+      totalTextElements: totalTextElements,
+    );
+  }
+
   void dispose() {
     _textRecognizer.close();
   }
