@@ -36,6 +36,8 @@ dependencies:
   google_mlkit_text_recognition: ^0.14.0
   speech_to_text: ^6.6.0
   provider: ^6.1.2
+  image: ^4.1.4
+  path_provider: ^2.1.2
 
 dependency_overrides:
   image_picker_ios: 0.8.9

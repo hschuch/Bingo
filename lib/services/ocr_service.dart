@@ -1,6 +1,9 @@
 import 'dart:io';
 import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:image/image.dart' as img;
+import 'package:path_provider/path_provider.dart';
 import '../models/bingo_card.dart';
 
 class OcrResult {
@@ -22,9 +25,79 @@ class OcrResult {
 class OcrService {
   final _textRecognizer = TextRecognizer();
 
+  /// Pre-process image for better OCR: grayscale, contrast boost,
+  /// and binarization to create clean black text on white background.
+  /// Runs in a background isolate to avoid blocking the UI.
+  Future<File> _preprocessImage(File imageFile) async {
+    final bytes = await imageFile.readAsBytes();
+    final resultBytes = await compute(_processImageBytes, bytes);
+    final tempDir = await getTemporaryDirectory();
+    final outFile = File('${tempDir.path}/bingo_preprocessed.png');
+    await outFile.writeAsBytes(resultBytes);
+    return outFile;
+  }
+
+  static List<int> _processImageBytes(List<int> bytes) {
+    var image = img.decodeImage(Uint8List.fromList(bytes));
+    if (image == null) return bytes;
+
+    // Resize if very large (keeps OCR fast without losing detail)
+    final maxDim = math.max(image.width, image.height);
+    if (maxDim > 2500) {
+      final scale = 2500 / maxDim;
+      image = img.copyResize(image,
+          width: (image.width * scale).round(),
+          height: (image.height * scale).round());
+    }
+
+    // Convert to grayscale
+    image = img.grayscale(image);
+
+    // Boost contrast
+    image = img.adjustColor(image, contrast: 1.5);
+
+    // Adaptive binarization: convert to pure black/white.
+    // Use a local threshold based on surrounding pixels.
+    final binary = img.Image(width: image.width, height: image.height);
+    const blockSize = 31;
+    const offset = 10;
+
+    for (int y = 0; y < image.height; y++) {
+      for (int x = 0; x < image.width; x++) {
+        // Compute local mean in a block around (x, y)
+        int sum = 0;
+        int count = 0;
+        final x0 = math.max(0, x - blockSize ~/ 2);
+        final x1 = math.min(image.width - 1, x + blockSize ~/ 2);
+        final y0 = math.max(0, y - blockSize ~/ 2);
+        final y1 = math.min(image.height - 1, y + blockSize ~/ 2);
+
+        // Sample every 4th pixel for speed
+        for (int sy = y0; sy <= y1; sy += 4) {
+          for (int sx = x0; sx <= x1; sx += 4) {
+            sum += image.getPixel(sx, sy).r.toInt();
+            count++;
+          }
+        }
+
+        final localMean = sum ~/ count;
+        final pixel = image.getPixel(x, y).r.toInt();
+
+        if (pixel < localMean - offset) {
+          binary.setPixelRgb(x, y, 0, 0, 0); // black (text)
+        } else {
+          binary.setPixelRgb(x, y, 255, 255, 255); // white (background)
+        }
+      }
+    }
+
+    return img.encodePng(binary);
+  }
+
   /// Process an image that may contain 1-9 bingo cards.
   Future<OcrResult> processImage(File imageFile) async {
-    final inputImage = InputImage.fromFile(imageFile);
+    final preprocessed = await _preprocessImage(imageFile);
+    final inputImage = InputImage.fromFile(preprocessed);
     final recognized = await _textRecognizer.processImage(inputImage);
 
     int totalTextElements = 0;
@@ -464,7 +537,8 @@ class OcrService {
 
   /// Simpler method for single-card photos.
   Future<OcrResult> processSingleCard(File imageFile) async {
-    final inputImage = InputImage.fromFile(imageFile);
+    final preprocessed = await _preprocessImage(imageFile);
+    final inputImage = InputImage.fromFile(preprocessed);
     final recognized = await _textRecognizer.processImage(inputImage);
 
     int totalTextElements = 0;
