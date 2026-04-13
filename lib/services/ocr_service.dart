@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import '../models/bingo_card.dart';
 
@@ -28,6 +29,8 @@ class OcrService {
 
     int totalTextElements = 0;
     final elements = <_NumberElement>[];
+
+    // Extract numbers from individual text elements
     for (final block in recognized.blocks) {
       for (final line in block.lines) {
         for (final element in line.elements) {
@@ -48,6 +51,13 @@ class OcrService {
     }
 
     final totalDetected = elements.length;
+
+    // Try merging adjacent single digits into two-digit numbers
+    // (OCR sometimes splits "35" into "3" and "5")
+    _mergeAdjacentDigits(elements);
+    final afterMerge = elements.length;
+
+    // Filter out small text (card IDs, serial numbers)
     _filterByTextSize(elements);
     final afterFilter = elements.length;
 
@@ -57,7 +67,8 @@ class OcrService {
         totalNumbersDetected: totalDetected,
         numbersAfterFilter: afterFilter,
         totalTextElements: totalTextElements,
-        debugInfo: 'Only $afterFilter numbers found after filtering',
+        debugInfo: 'Only $afterFilter numbers after filtering '
+            '($totalDetected raw, $afterMerge after merge)',
       );
     }
 
@@ -67,18 +78,72 @@ class OcrService {
       totalNumbersDetected: totalDetected,
       numbersAfterFilter: afterFilter,
       totalTextElements: totalTextElements,
-      debugInfo: result.debug,
+      debugInfo: 'Raw: $totalDetected, merged: $afterMerge, '
+          'filtered: $afterFilter\n${result.debug}',
     );
   }
 
+  /// Merge adjacent single-digit elements that are likely parts of one
+  /// two-digit number split by OCR (e.g. "3" + "5" → "35").
+  void _mergeAdjacentDigits(List<_NumberElement> elements) {
+    // Sort by Y then X so adjacent elements in the same row are next to each other
+    elements.sort((a, b) {
+      final dy = a.centerY - b.centerY;
+      if (dy.abs() > a.height * 0.3) return dy > 0 ? 1 : -1;
+      return a.centerX.compareTo(b.centerX);
+    });
+
+    final toRemove = <int>{};
+    final toAdd = <_NumberElement>[];
+
+    for (int i = 0; i < elements.length - 1; i++) {
+      if (toRemove.contains(i)) continue;
+      final left = elements[i];
+      if (left.number > 9) continue; // Only merge single digits
+
+      final right = elements[i + 1];
+      if (toRemove.contains(i + 1)) continue;
+      if (right.number > 9) continue;
+
+      // Must be on same row (similar Y)
+      if ((left.centerY - right.centerY).abs() > left.height * 0.5) continue;
+
+      // Must be very close horizontally — nearly touching
+      final xGap = right.centerX - left.centerX;
+      if (xGap <= 0 || xGap > math.max(left.width, right.width) * 1.5) continue;
+
+      // Try merging left+right
+      final merged = left.number * 10 + right.number;
+      if (merged >= 1 && merged <= 75) {
+        toRemove.add(i);
+        toRemove.add(i + 1);
+        toAdd.add(_NumberElement(
+          number: merged,
+          centerX: (left.centerX + right.centerX) / 2,
+          centerY: (left.centerY + right.centerY) / 2,
+          height: math.max(left.height, right.height),
+          width: (right.centerX - left.centerX) + right.width,
+        ));
+      }
+    }
+
+    // Remove merged originals (in reverse order to keep indices valid)
+    final sortedRemove = toRemove.toList()..sort((a, b) => b.compareTo(a));
+    for (final idx in sortedRemove) {
+      elements.removeAt(idx);
+    }
+    elements.addAll(toAdd);
+  }
+
   /// Remove elements whose text height is significantly smaller than
-  /// the typical bingo number. Filters card IDs, serial numbers, etc.
+  /// the typical bingo number. Uses 75th percentile as reference to be
+  /// robust against noise pulling the median down.
   void _filterByTextSize(List<_NumberElement> elements) {
     if (elements.length < 10) return;
     final heights = elements.map((e) => e.height).toList()..sort();
-    final medianHeight = heights[heights.length ~/ 2];
-    // Keep only elements at least 60% of median height
-    elements.removeWhere((e) => e.height < medianHeight * 0.6);
+    final refHeight = heights[(heights.length * 0.75).toInt()];
+    // Keep only elements at least 50% of the reference height
+    elements.removeWhere((e) => e.height < refHeight * 0.5);
   }
 
   _ExtractionResult _extractCards(List<_NumberElement> elements) {
@@ -102,32 +167,34 @@ class OcrService {
     final medianH = heights[heights.length ~/ 2];
     final threshold = medianH * 0.8;
     debug.writeln('Median height: ${medianH.toStringAsFixed(1)}, '
-        'cluster threshold: ${threshold.toStringAsFixed(1)}');
+        'threshold: ${threshold.toStringAsFixed(1)}');
 
-    // Use B column (leftmost) to find card columns via X clustering.
-    // B numbers from the same card column share an X position.
-    // B numbers from different card columns are separated by a full card width.
-    final bElems = byCol[0]!;
-    final oElems = byCol[4]!;
-
-    if (bElems.length < 3) {
-      debug.writeln('Too few B-column numbers, falling back to single card');
-      final card = _buildCardFromElements(elements);
-      return _ExtractionResult(
-          card != null ? [card] : [], debug.toString());
+    // --- X CARD COLUMN DETECTION ---
+    // Use the bingo column with the most elements for X clustering.
+    // Elements from the same bingo column on different cards are
+    // separated by a full card width (much larger than within-card gaps).
+    int bestCol = 0;
+    int bestCount = 0;
+    for (int i = 0; i < 5; i++) {
+      if (byCol[i]!.length > bestCount) {
+        bestCount = byCol[i]!.length;
+        bestCol = i;
+      }
     }
+    final refXElems = byCol[bestCol]!;
+    final refXClusters =
+        _cluster(refXElems.map((e) => e.centerX).toList(), threshold);
+    final numCardCols = refXClusters.length.clamp(1, 3);
+    debug.writeln('X ref col=$bestCol (${refXElems.length} elems), '
+        '${refXClusters.length} X-clusters → $numCardCols card col(s)');
 
+    // For X boundaries, use B (leftmost) and O (rightmost) columns.
+    // Boundary = midpoint between O of card i and B of card i+1.
     final bXClusters =
-        _cluster(bElems.map((e) => e.centerX).toList(), threshold);
+        _cluster(byCol[0]!.map((e) => e.centerX).toList(), threshold);
     final oXClusters =
-        _cluster(oElems.map((e) => e.centerX).toList(), threshold);
-    final numCardCols = bXClusters.length.clamp(1, 3);
-    debug.writeln(
-        'B X-clusters: ${bXClusters.length}, O X-clusters: ${oXClusters.length} '
-        '→ $numCardCols card column(s)');
+        _cluster(byCol[4]!.map((e) => e.centerX).toList(), threshold);
 
-    // Compute X boundaries between card columns using the midpoint
-    // between the O column of card i and the B column of card i+1.
     final xBoundaries = <double>[];
     if (numCardCols > 1 &&
         oXClusters.length >= numCardCols &&
@@ -135,40 +202,40 @@ class OcrService {
       for (int i = 0; i < numCardCols - 1; i++) {
         xBoundaries.add((oXClusters[i] + bXClusters[i + 1]) / 2);
       }
-    } else if (numCardCols > 1) {
-      // Fallback: evenly split B clusters
-      final cpc = bXClusters.length / numCardCols;
+    } else if (numCardCols > 1 && refXClusters.length >= numCardCols) {
+      // Fallback: evenly split reference column clusters
+      final cpc = refXClusters.length / numCardCols;
       for (int i = 1; i < numCardCols; i++) {
         final idx = (i * cpc).round();
-        if (idx > 0 && idx < bXClusters.length) {
+        if (idx > 0 && idx < refXClusters.length) {
           xBoundaries
-              .add((bXClusters[idx - 1] + bXClusters[idx]) / 2);
+              .add((refXClusters[idx - 1] + refXClusters[idx]) / 2);
         }
       }
     }
-    debug.writeln('X boundaries: $xBoundaries');
+    debug.writeln('X boundaries: ${xBoundaries.map((b) => b.toStringAsFixed(0)).toList()}');
 
-    // Cluster B-column Y positions to find number rows.
-    // Total Y clusters should be 5 * numCardRows.
-    final bYClusters =
-        _cluster(bElems.map((e) => e.centerY).toList(), threshold);
-    final numCardRows = _bestDivisor(bYClusters.length, 5);
-    debug.writeln(
-        'B Y-clusters: ${bYClusters.length} → $numCardRows card row(s)');
+    // --- Y CARD ROW DETECTION ---
+    // Use ALL elements for Y clustering (much more data than B-only).
+    // Each row cluster has elements from all card columns at that row.
+    final allYClusters =
+        _cluster(elements.map((e) => e.centerY).toList(), threshold);
+    final numCardRows = _bestDivisor(allYClusters.length, 5);
+    debug.writeln('${allYClusters.length} Y-clusters → $numCardRows card row(s)');
 
     // Compute Y boundaries between card rows
     final yBoundaries = <double>[];
-    if (numCardRows > 1) {
-      final cpr = bYClusters.length / numCardRows;
+    if (numCardRows > 1 && allYClusters.length >= numCardRows * 3) {
+      final cpr = allYClusters.length / numCardRows;
       for (int i = 1; i < numCardRows; i++) {
         final idx = (i * cpr).round();
-        if (idx > 0 && idx < bYClusters.length) {
+        if (idx > 0 && idx < allYClusters.length) {
           yBoundaries
-              .add((bYClusters[idx - 1] + bYClusters[idx]) / 2);
+              .add((allYClusters[idx - 1] + allYClusters[idx]) / 2);
         }
       }
     }
-    debug.writeln('Y boundaries: $yBoundaries');
+    debug.writeln('Y boundaries: ${yBoundaries.map((b) => b.toStringAsFixed(0)).toList()}');
     debug.writeln('Layout: ${numCardCols}x$numCardRows '
         '= ${numCardCols * numCardRows} cards');
 
@@ -324,6 +391,7 @@ class OcrService {
     }
 
     final totalDetected = elements.length;
+    _mergeAdjacentDigits(elements);
     _filterByTextSize(elements);
 
     BingoCard? card;
