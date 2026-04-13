@@ -54,39 +54,55 @@ class OcrService {
     image = img.grayscale(image);
 
     // Boost contrast
-    image = img.adjustColor(image, contrast: 1.5);
+    image = img.adjustColor(image, contrast: 2.0);
 
-    // Adaptive binarization: convert to pure black/white.
-    // Use a local threshold based on surrounding pixels.
-    final binary = img.Image(width: image.width, height: image.height);
-    const blockSize = 31;
-    const offset = 10;
+    // Sharpen to make number edges crisper
+    image = img.convolution(image, filter: [
+      0, -1, 0,
+      -1, 5, -1,
+      0, -1, 0,
+    ], div: 1);
 
+    // Otsu's method: find optimal global threshold automatically
+    final histogram = List<int>.filled(256, 0);
     for (int y = 0; y < image.height; y++) {
       for (int x = 0; x < image.width; x++) {
-        // Compute local mean in a block around (x, y)
-        int sum = 0;
-        int count = 0;
-        final x0 = math.max(0, x - blockSize ~/ 2);
-        final x1 = math.min(image.width - 1, x + blockSize ~/ 2);
-        final y0 = math.max(0, y - blockSize ~/ 2);
-        final y1 = math.min(image.height - 1, y + blockSize ~/ 2);
+        histogram[image.getPixel(x, y).r.toInt()]++;
+      }
+    }
 
-        // Sample every 4th pixel for speed
-        for (int sy = y0; sy <= y1; sy += 4) {
-          for (int sx = x0; sx <= x1; sx += 4) {
-            sum += image.getPixel(sx, sy).r.toInt();
-            count++;
-          }
-        }
+    final total = image.width * image.height;
+    double sum = 0;
+    for (int i = 0; i < 256; i++) {
+      sum += i * histogram[i];
+    }
 
-        final localMean = sum ~/ count;
+    double sumB = 0, wB = 0, maxVar = 0;
+    int thresh = 128;
+    for (int i = 0; i < 256; i++) {
+      wB += histogram[i];
+      if (wB == 0) continue;
+      final wF = total - wB;
+      if (wF == 0) break;
+      sumB += i * histogram[i];
+      final mB = sumB / wB;
+      final mF = (sum - sumB) / wF;
+      final variance = wB * wF * (mB - mF) * (mB - mF);
+      if (variance > maxVar) {
+        maxVar = variance;
+        thresh = i;
+      }
+    }
+
+    // Apply threshold to create binary image
+    final binary = img.Image(width: image.width, height: image.height);
+    for (int y = 0; y < image.height; y++) {
+      for (int x = 0; x < image.width; x++) {
         final pixel = image.getPixel(x, y).r.toInt();
-
-        if (pixel < localMean - offset) {
-          binary.setPixelRgb(x, y, 0, 0, 0); // black (text)
+        if (pixel < thresh) {
+          binary.setPixelRgb(x, y, 0, 0, 0);
         } else {
-          binary.setPixelRgb(x, y, 255, 255, 255); // white (background)
+          binary.setPixelRgb(x, y, 255, 255, 255);
         }
       }
     }
