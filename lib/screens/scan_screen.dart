@@ -44,14 +44,47 @@ class _ScanScreenState extends State<ScanScreen> {
 
       setState(() {
         _processing = false;
-        _detectionInfo =
-            'Detected ${result.totalNumbersDetected} numbers '
-            '(${result.numbersAfterFilter} after noise filter)';
+        _detectionInfo = result.debugInfo;
         if (result.cards.isEmpty) {
           _error =
-              'Could not read card.\n$_detectionInfo.\n\n'
+              'Could not read card.\n'
+              '${result.debugInfo}\n\n'
               'Make sure the card fills most of the photo '
               'and all numbers are clearly visible.';
+        } else {
+          _detectedCards = result.cards;
+        }
+      });
+    } catch (e) {
+      setState(() {
+        _processing = false;
+        _error = 'Failed to process image: $e';
+      });
+    }
+  }
+
+  Future<void> _scanCardSheet(ImageSource source) async {
+    try {
+      final image = await _picker.pickImage(source: source);
+      if (image == null) return;
+
+      setState(() {
+        _processing = true;
+        _error = null;
+        _detectedCards = null;
+        _detectionInfo = null;
+      });
+
+      final result = await _ocrService.processImage(File(image.path));
+
+      setState(() {
+        _processing = false;
+        _detectionInfo = result.debugInfo;
+        if (result.cards.isEmpty) {
+          _error =
+              'Could not read cards.\n'
+              '${result.debugInfo}\n\n'
+              'Try scanning one card at a time instead.';
         } else {
           _detectedCards = result.cards;
         }
@@ -80,7 +113,7 @@ class _ScanScreenState extends State<ScanScreen> {
 
   Widget _buildCapture() {
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -96,15 +129,75 @@ class _ScanScreenState extends State<ScanScreen> {
               'Scan Your Bingo Card',
               style: Theme.of(context).textTheme.headlineSmall,
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 24),
+
+            // Single card scanning (recommended)
+            Text('Single Card',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    )),
+            const SizedBox(height: 4),
             Text(
-              'For best results, photograph ONE card at a time. '
-              'Hold your phone directly over the card with good lighting.',
+              'Point your camera at one card. Best results.',
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
             ),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: () => _scanSingleCard(ImageSource.camera),
+              icon: const Icon(Icons.camera_alt),
+              label: const Text('Scan Single Card'),
+            ),
+
+            const SizedBox(height: 24),
+            const Divider(),
+            const SizedBox(height: 12),
+
+            // Multi-card sheet scanning
+            Text('Card Sheet',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    )),
+            const SizedBox(height: 4),
+            Text(
+              'Photograph a full sheet with multiple cards.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () => _scanCardSheet(ImageSource.camera),
+              icon: const Icon(Icons.grid_view),
+              label: const Text('Scan Card Sheet'),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: () => _scanCardSheet(ImageSource.gallery),
+              icon: const Icon(Icons.photo_library),
+              label: const Text('Pick Sheet from Gallery'),
+            ),
+
+            const SizedBox(height: 24),
+            const Divider(),
+            const SizedBox(height: 12),
+
+            // Manual options
+            OutlinedButton.icon(
+              onPressed: _addManualCard,
+              icon: const Icon(Icons.edit),
+              label: const Text('Enter Card Manually'),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: _addRandomCard,
+              icon: const Icon(Icons.casino),
+              label: const Text('Generate Test Card'),
+            ),
+
             if (_error != null) ...[
               const SizedBox(height: 16),
               Container(
@@ -119,32 +212,6 @@ class _ScanScreenState extends State<ScanScreen> {
                             Theme.of(context).colorScheme.onErrorContainer)),
               ),
             ],
-            const SizedBox(height: 32),
-            FilledButton.icon(
-              onPressed: () => _scanSingleCard(ImageSource.camera),
-              icon: const Icon(Icons.camera_alt),
-              label: const Text('Scan Card with Camera'),
-            ),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: () => _scanSingleCard(ImageSource.gallery),
-              icon: const Icon(Icons.photo_library),
-              label: const Text('Pick from Gallery'),
-            ),
-            const SizedBox(height: 24),
-            const Divider(),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: _addManualCard,
-              icon: const Icon(Icons.edit),
-              label: const Text('Enter Card Manually'),
-            ),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: _addRandomCard,
-              icon: const Icon(Icons.casino),
-              label: const Text('Generate Test Card'),
-            ),
           ],
         ),
       ),
@@ -180,11 +247,15 @@ class _ScanScreenState extends State<ScanScreen> {
               if (_detectionInfo != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
-                  child: Text(
-                    _detectionInfo!,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
+                  child: GestureDetector(
+                    onTap: () => _showDebugInfo(),
+                    child: Text(
+                      'Tap for scan details',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).colorScheme.primary,
+                            decoration: TextDecoration.underline,
+                          ),
+                    ),
                   ),
                 ),
             ],
@@ -239,6 +310,27 @@ class _ScanScreenState extends State<ScanScreen> {
     );
   }
 
+  void _showDebugInfo() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Scan Details'),
+        content: SingleChildScrollView(
+          child: Text(
+            _detectionInfo ?? 'No details available',
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _acceptCards() {
     final gameState = context.read<GameState>();
     for (final card in _detectedCards!) {
@@ -247,7 +339,6 @@ class _ScanScreenState extends State<ScanScreen> {
     final count = _detectedCards!.length;
     final totalCards = gameState.cards.length;
 
-    // Ask if they want to scan more cards
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
