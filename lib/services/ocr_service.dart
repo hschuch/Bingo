@@ -35,15 +35,69 @@ class OcrService {
       for (final line in block.lines) {
         for (final element in line.elements) {
           totalTextElements++;
-          final number = int.tryParse(element.text.trim());
+          final text = element.text.trim();
+          final box = element.boundingBox;
+          final number = int.tryParse(text);
           if (number != null && number >= 1 && number <= 75) {
-            final box = element.boundingBox;
             elements.add(_NumberElement(
               number: number,
               centerX: box.center.dx,
               centerY: box.center.dy,
               height: box.height,
               width: box.width,
+            ));
+          } else if (text.length >= 2 && text.length <= 6) {
+            // Try regex to extract a number embedded in text
+            // (handles "B17", "N33", "O72", etc.)
+            final matches =
+                RegExp(r'(\d{1,2})').allMatches(text).toList();
+            if (matches.length == 1) {
+              final n = int.tryParse(matches[0].group(1)!);
+              if (n != null && n >= 1 && n <= 75) {
+                elements.add(_NumberElement(
+                  number: n,
+                  centerX: box.center.dx,
+                  centerY: box.center.dy,
+                  height: box.height,
+                  width: box.width,
+                ));
+              }
+            }
+          }
+        }
+
+        // Also extract numbers from the full line text that may have
+        // been concatenated or missed at the element level.
+        final lineBox = line.boundingBox;
+        final lineText = line.text;
+        final lineMatches =
+            RegExp(r'\b(\d{1,2})\b').allMatches(lineText);
+        for (final match in lineMatches) {
+          final n = int.tryParse(match.group(1)!);
+          if (n == null || n < 1 || n > 75) continue;
+
+          // Estimate X position from character position within line
+          final charMid =
+              match.start + match.group(1)!.length / 2;
+          final xFrac = lineText.length > 1
+              ? charMid / lineText.length
+              : 0.5;
+          final estX = lineBox.left + lineBox.width * xFrac;
+
+          // Skip if we already have this number near this position
+          final isDupe = elements.any((e) =>
+              e.number == n &&
+              (e.centerY - lineBox.center.dy).abs() <
+                  lineBox.height * 1.5 &&
+              (e.centerX - estX).abs() < lineBox.width * 0.15);
+
+          if (!isDupe) {
+            elements.add(_NumberElement(
+              number: n,
+              centerX: estX,
+              centerY: lineBox.center.dy,
+              height: lineBox.height,
+              width: lineBox.width / 5,
             ));
           }
         }
@@ -258,7 +312,7 @@ class OcrService {
     final sortedKeys = regions.keys.toList()..sort();
     for (final key in sortedKeys) {
       final regionElements = regions[key]!;
-      if (regionElements.length >= 8) {
+      if (regionElements.isNotEmpty) {
         final card = _buildCardFromElements(regionElements);
         if (card != null) cards.add(card);
       }
@@ -320,8 +374,42 @@ class OcrService {
   }
 
   /// Build one BingoCard from elements using number values for column
-  /// assignment and Y position for row ordering.
+  /// assignment, spatial cross-validation, and Y position for row ordering.
   BingoCard? _buildCardFromElements(List<_NumberElement> elements) {
+    if (elements.isEmpty) return null;
+
+    // Cross-validate: cluster X positions to find spatial columns,
+    // then verify each number's value matches its spatial column.
+    // B(1-15) should be leftmost, I(16-30) next, etc.
+    final heights = elements.map((e) => e.height).toList()..sort();
+    final h = heights[heights.length ~/ 2];
+    final xClusters =
+        _cluster(elements.map((e) => e.centerX).toList(), h * 0.8);
+
+    if (xClusters.length >= 4 && xClusters.length <= 6) {
+      elements = elements.where((elem) {
+        final col = _columnForNumber(elem.number);
+        if (col == null) return false;
+
+        // Find nearest spatial column (clusters are sorted left→right)
+        int nearest = 0;
+        double bestDist = (elem.centerX - xClusters[0]).abs();
+        for (int i = 1; i < xClusters.length; i++) {
+          final d = (elem.centerX - xClusters[i]).abs();
+          if (d < bestDist) {
+            bestDist = d;
+            nearest = i;
+          }
+        }
+
+        // Value-based column must match spatial column (±1 tolerance
+        // when cluster count isn't exactly 5)
+        final tolerance = xClusters.length == 5 ? 0 : 1;
+        return (col - nearest).abs() <= tolerance;
+      }).toList();
+    }
+
+    // Assign to columns by number value
     final columns = <int, List<_NumberElement>>{
       for (int i = 0; i < 5; i++) i: [],
     };
@@ -330,15 +418,20 @@ class OcrService {
       if (col != null) columns[col]!.add(elem);
     }
 
+    // Build 5x5 grid, sorted by Y within each column.
+    // Skip duplicate numbers — each number appears at most once per card.
     final grid = List.generate(5, (_) => List<int?>.filled(5, null));
-
     for (int col = 0; col < 5; col++) {
       final colElements = columns[col]!;
       colElements.sort((a, b) => a.centerY.compareTo(b.centerY));
-      for (int row = 0;
-          row < colElements.length && row < 5;
-          row++) {
-        grid[row][col] = colElements[row].number;
+      final used = <int>{};
+      int row = 0;
+      for (final elem in colElements) {
+        if (row >= 5) break;
+        if (used.contains(elem.number)) continue;
+        used.add(elem.number);
+        grid[row][col] = elem.number;
+        row++;
       }
     }
 
@@ -350,7 +443,7 @@ class OcrService {
         if (cell != null) filled++;
       }
     }
-    if (filled < 8) return null;
+    if (filled < 1) return null;
 
     return BingoCard(numbers: grid);
   }

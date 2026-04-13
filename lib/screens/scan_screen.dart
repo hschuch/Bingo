@@ -490,45 +490,79 @@ class _EditableCardWidget extends StatelessWidget {
   }
 
   void _editCell(BuildContext context, int row, int col) {
-    final currentNumber = card.numbers[row][col];
-    final controller =
-        TextEditingController(text: currentNumber?.toString() ?? '');
-
     final colLetter = BingoCard.columnLetters[col];
     final minVal = col * 15 + 1;
     final maxVal = col * 15 + 15;
 
+    // Collect numbers already used in this column (excluding current cell)
+    final usedInCol = <int>{};
+    for (int r = 0; r < 5; r++) {
+      if (r == row) continue;
+      final n = card.numbers[r][col];
+      if (n != null) usedInCol.add(n);
+    }
+
+    // Available numbers for this column
+    final available = <int>[];
+    for (int n = minVal; n <= maxVal; n++) {
+      if (!usedInCol.contains(n)) available.add(n);
+    }
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('$colLetter Column ($minVal-$maxVal)'),
-        content: TextField(
-          controller: controller,
-          keyboardType: TextInputType.number,
-          autofocus: true,
-          decoration: InputDecoration(
-            hintText: 'Enter number ($minVal-$maxVal)',
-            border: const OutlineInputBorder(),
+        title: Text('$colLetter Column'),
+        content: SizedBox(
+          width: 280,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: available.map((n) {
+                  final isCurrentValue = n == card.numbers[row][col];
+                  return SizedBox(
+                    width: 48,
+                    height: 40,
+                    child: OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                        padding: EdgeInsets.zero,
+                        backgroundColor: isCurrentValue
+                            ? Theme.of(context).colorScheme.primaryContainer
+                            : null,
+                      ),
+                      onPressed: () {
+                        final newNumbers = List.generate(
+                            5, (r) => List<int?>.from(card.numbers[r]));
+                        newNumbers[row][col] = n;
+                        onCardChanged(
+                            BingoCard(id: card.id, numbers: newNumbers));
+                        Navigator.pop(ctx);
+                      },
+                      child: Text('$n',
+                          style: const TextStyle(fontSize: 14)),
+                    ),
+                  );
+                }).toList(),
+              ),
+              if (card.numbers[row][col] != null) ...[
+                const SizedBox(height: 12),
+                TextButton(
+                  onPressed: () {
+                    final newNumbers = List.generate(
+                        5, (r) => List<int?>.from(card.numbers[r]));
+                    newNumbers[row][col] = null;
+                    onCardChanged(
+                        BingoCard(id: card.id, numbers: newNumbers));
+                    Navigator.pop(ctx);
+                  },
+                  child: const Text('Clear'),
+                ),
+              ],
+            ],
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final number = int.tryParse(controller.text.trim());
-              final newNumbers = List.generate(
-                  5, (r) => List<int?>.from(card.numbers[r]));
-              newNumbers[row][col] = number;
-              onCardChanged(BingoCard(
-                  id: card.id, numbers: newNumbers));
-              Navigator.pop(ctx);
-            },
-            child: const Text('Set'),
-          ),
-        ],
       ),
     );
   }
