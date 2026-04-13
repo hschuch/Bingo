@@ -216,12 +216,17 @@ class OcrService {
         'By column: B=${byCol[0]!.length} I=${byCol[1]!.length} '
         'N=${byCol[2]!.length} G=${byCol[3]!.length} O=${byCol[4]!.length}');
 
-    // Adaptive clustering threshold from element sizes
+    // Adaptive clustering thresholds from element sizes.
+    // X threshold is larger because card columns are separated by a full
+    // card width — we need to tolerate imprecise positions from line-level
+    // extraction. Y threshold is tighter to separate individual rows.
     final heights = elements.map((e) => e.height).toList()..sort();
     final medianH = heights[heights.length ~/ 2];
-    final threshold = medianH * 0.8;
+    final xThreshold = medianH * 2.0;
+    final yThreshold = medianH * 0.8;
     debug.writeln('Median height: ${medianH.toStringAsFixed(1)}, '
-        'threshold: ${threshold.toStringAsFixed(1)}');
+        'xThresh: ${xThreshold.toStringAsFixed(1)}, '
+        'yThresh: ${yThreshold.toStringAsFixed(1)}');
 
     // --- X CARD COLUMN DETECTION ---
     // Use the bingo column with the most elements for X clustering.
@@ -237,7 +242,7 @@ class OcrService {
     }
     final refXElems = byCol[bestCol]!;
     final refXClusters =
-        _cluster(refXElems.map((e) => e.centerX).toList(), threshold);
+        _cluster(refXElems.map((e) => e.centerX).toList(), xThreshold);
     final numCardCols = refXClusters.length.clamp(1, 3);
     debug.writeln('X ref col=$bestCol (${refXElems.length} elems), '
         '${refXClusters.length} X-clusters → $numCardCols card col(s)');
@@ -245,9 +250,9 @@ class OcrService {
     // For X boundaries, use B (leftmost) and O (rightmost) columns.
     // Boundary = midpoint between O of card i and B of card i+1.
     final bXClusters =
-        _cluster(byCol[0]!.map((e) => e.centerX).toList(), threshold);
+        _cluster(byCol[0]!.map((e) => e.centerX).toList(), xThreshold);
     final oXClusters =
-        _cluster(byCol[4]!.map((e) => e.centerX).toList(), threshold);
+        _cluster(byCol[4]!.map((e) => e.centerX).toList(), xThreshold);
 
     final xBoundaries = <double>[];
     if (numCardCols > 1 &&
@@ -273,7 +278,7 @@ class OcrService {
     // Use ALL elements for Y clustering (much more data than B-only).
     // Each row cluster has elements from all card columns at that row.
     final allYClusters =
-        _cluster(elements.map((e) => e.centerY).toList(), threshold);
+        _cluster(elements.map((e) => e.centerY).toList(), yThreshold);
     final numCardRows = _bestDivisor(allYClusters.length, 5);
     debug.writeln('${allYClusters.length} Y-clusters → $numCardRows card row(s)');
 
